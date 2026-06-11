@@ -1,0 +1,40 @@
+---
+- name: Check if data volume already has a filesystem
+  ansible.builtin.command: blkid -o value -s TYPE {{ minecraft_device }}
+  register: blkid_result
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Format data volume with XFS if empty
+  ansible.builtin.filesystem:
+    fstype: xfs
+    dev: "{{ minecraft_device }}"
+  when: blkid_result.stdout == ""
+  become: true
+
+- name: Create mount point
+  ansible.builtin.file:
+    path: "{{ minecraft_data_mount }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Mount data volume and add to fstab
+  ansible.posix.mount:
+    path: "{{ minecraft_data_mount }}"
+    src: "{{ minecraft_device }}"
+    fstype: xfs
+    opts: defaults,nofail
+    state: mounted
+  become: true
+
+- name: Set permissions on data directory
+  ansible.builtin.file:
+    path: "{{ minecraft_data_mount }}"
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+  become: true

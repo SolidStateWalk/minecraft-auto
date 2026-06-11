@@ -1,0 +1,12 @@
+---
+- name: Install system prerequisites
+  ansible.builtin.import_tasks: prerequisites.yml
+
+- name: Mount persistent EBS data volume
+  ansible.builtin.import_tasks: volume.yml
+
+- name: Install and configure Docker
+  ansible.builtin.import_tasks: docker.yml
+
+- name: Deploy Minecraft container
+  ansible.builtin.import_tasks: minecraft.yml

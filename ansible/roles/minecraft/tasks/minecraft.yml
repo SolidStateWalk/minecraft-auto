@@ -1,0 +1,38 @@
+---
+- name: Pull Minecraft Docker image
+  community.docker.docker_image:
+    name: "{{ minecraft_image }}:{{ minecraft_image_tag }}"
+    source: pull
+  become: true
+
+- name: Deploy Minecraft container
+  community.docker.docker_container:
+    name: "{{ minecraft_container_name }}"
+    image: "{{ minecraft_image }}:{{ minecraft_image_tag }}"
+    state: started
+    restart_policy: "{{ minecraft_restart_policy }}"
+    ports:
+      - "{{ minecraft_port }}:25565"
+    volumes:
+      - "{{ minecraft_data_mount }}:/data"
+    env:
+      EULA: "{{ minecraft_eula }}"
+      TYPE: "{{ minecraft_type }}"
+      VERSION: "{{ minecraft_version }}"
+      DIFFICULTY: "{{ minecraft_difficulty }}"
+      MAX_PLAYERS: "{{ minecraft_max_players | string }}"
+      VIEW_DISTANCE: "{{ minecraft_view_distance | string }}"
+      SIMULATION_DISTANCE: "{{ minecraft_simulation_distance | string }}"
+      MOTD: "{{ minecraft_motd }}"
+      MEMORY: "{{ minecraft_max_memory }}"
+      ONLINE_MODE: "{{ minecraft_online_mode }}"
+    stop_signal: SIGTERM
+    stop_timeout: 30
+  become: true
+
+- name: Wait for Minecraft port to open
+  ansible.builtin.wait_for:
+    port: "{{ minecraft_port }}"
+    host: "127.0.0.1"
+    delay: 15
+    timeout: 120

@@ -1,0 +1,18 @@
+---
+minecraft_device: /dev/xvdf
+minecraft_data_mount: /opt/minecraft/data
+minecraft_image: itzg/minecraft-server
+minecraft_image_tag: latest
+minecraft_container_name: minecraft
+minecraft_eula: "TRUE"
+minecraft_type: VANILLA
+minecraft_version: LATEST
+minecraft_difficulty: normal
+minecraft_max_players: 10
+minecraft_view_distance: 8
+minecraft_simulation_distance: 6
+minecraft_motd: "Acme Corp Minecraft Server"
+minecraft_max_memory: 1536M
+minecraft_online_mode: "true"
+minecraft_port: 25565
+minecraft_restart_policy: unless-stopped

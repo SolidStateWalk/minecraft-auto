@@ -1,0 +1,7 @@
+---
+- name: Restart minecraft container
+  community.docker.docker_container:
+    name: minecraft
+    state: started
+    restart: true
+  become: true
