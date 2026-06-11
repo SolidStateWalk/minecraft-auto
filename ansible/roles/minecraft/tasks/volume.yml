@@ -1,6 +1,12 @@
 ---
+- name: Wait for EBS volume to be attached
+  ansible.builtin.wait_for:
+    path: /dev/nvme1n1
+    timeout: 60
+  become: true
+
 - name: Check if data volume already has a filesystem
-  ansible.builtin.command: blkid -o value -s TYPE {{ minecraft_device }}
+  ansible.builtin.command: blkid -o value -s TYPE /dev/nvme1n1
   register: blkid_result
   changed_when: false
   failed_when: false
@@ -9,7 +15,7 @@
 - name: Format data volume with XFS if empty
   ansible.builtin.filesystem:
     fstype: xfs
-    dev: "{{ minecraft_device }}"
+    dev: /dev/nvme1n1
   when: blkid_result.stdout == ""
   become: true
 
@@ -25,7 +31,7 @@
 - name: Mount data volume and add to fstab
   ansible.posix.mount:
     path: "{{ minecraft_data_mount }}"
-    src: "{{ minecraft_device }}"
+    src: /dev/nvme1n1
     fstype: xfs
     opts: defaults,nofail
     state: mounted
