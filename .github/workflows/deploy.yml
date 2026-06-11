@@ -148,6 +148,11 @@ jobs:
       - name: Install nmap
         run: sudo apt-get update && sudo apt-get install -y nmap
 
+      - name: Wait for Minecraft to finish starting
+        run: |
+          echo "Waiting 90s for Minecraft to fully start..."
+          sleep 90
+
       - name: Probe Minecraft port
         run: nmap -sV -Pn -p T:25565 "$PUBLIC_IP"
 
