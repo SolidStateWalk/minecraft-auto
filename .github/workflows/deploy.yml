@@ -1,0 +1,223 @@
+name: Deploy Minecraft Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: Terraform Provision
+    runs-on: ubuntu-latest
+    outputs:
+      public_ip: ${{ steps.tf_output.outputs.public_ip }}
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Clean up leftover AWS resources
+        run: |
+          aws ec2 delete-key-pair --key-name minecraft-auto-key --region ${{ secrets.AWS_REGION }} || true
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=minecraft-auto-sg" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text --region ${{ secrets.AWS_REGION }} 2>/dev/null || echo "")
+          if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+            INSTANCE_IDS=$(aws ec2 describe-instances \
+              --filters "Name=instance.group-id,Values=$SG_ID" \
+                        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+              --query "Reservations[*].Instances[*].InstanceId" \
+              --output text --region ${{ secrets.AWS_REGION }})
+            if [ -n "$INSTANCE_IDS" ]; then
+              aws ec2 terminate-instances --instance-ids $INSTANCE_IDS --region ${{ secrets.AWS_REGION }}
+              aws ec2 wait instance-terminated --instance-ids $INSTANCE_IDS --region ${{ secrets.AWS_REGION }}
+            fi
+            ALLOC_IDS=$(aws ec2 describe-addresses \
+              --filters "Name=tag:Project,Values=minecraft-auto" \
+              --query "Addresses[*].AllocationId" \
+              --output text --region ${{ secrets.AWS_REGION }})
+            for alloc in $ALLOC_IDS; do
+              aws ec2 release-address --allocation-id $alloc --region ${{ secrets.AWS_REGION }} || true
+            done
+            aws ec2 delete-security-group --group-id $SG_ID --region ${{ secrets.AWS_REGION }} || true
+          fi
+          for vol in $(aws ec2 describe-volumes \
+            --filters "Name=status,Values=available" \
+            --query "Volumes[*].VolumeId" \
+            --output text --region ${{ secrets.AWS_REGION }}); do
+            aws ec2 delete-volume --volume-id $vol --region ${{ secrets.AWS_REGION }} || true
+          done
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.0"
+          terraform_wrapper: false
+
+      - name: Write SSH public key
+        run: echo "${{ secrets.SSH_PUBLIC_KEY }}" > /tmp/minecraft.pub
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Capture public IP output
+        id: tf_output
+        run: |
+          IP=$(terraform output -raw public_ip)
+          echo "public_ip=$IP" >> "$GITHUB_OUTPUT"
+
+  ansible:
+    name: Ansible Configure
+    runs-on: ubuntu-latest
+    needs: terraform
+    env:
+      PUBLIC_IP: ${{ needs.terraform.outputs.public_ip }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          pip install --upgrade pip
+          pip install ansible
+
+      - name: Install Ansible collections
+        working-directory: ansible
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Write SSH private key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/minecraft
+          chmod 600 ~/.ssh/minecraft
+
+      - name: Generate inventory
+        working-directory: ansible
+        run: |
+          mkdir -p inventory
+          cat > inventory/hosts.ini << EOF
+          [minecraft]
+          $PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/minecraft ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+          [minecraft:vars]
+          ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 20); do
+            ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+              -i ~/.ssh/minecraft ubuntu@$PUBLIC_IP 'echo ok' && break
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+
+      - name: Run Ansible playbook
+        working-directory: ansible
+        run: ansible-playbook -i inventory/hosts.ini site.yml -v
+
+  verify:
+    name: nmap Verify
+    runs-on: ubuntu-latest
+    needs: [terraform, ansible]
+    env:
+      PUBLIC_IP: ${{ needs.terraform.outputs.public_ip }}
+
+    steps:
+      - name: Install nmap
+        run: sudo apt-get update && sudo apt-get install -y nmap
+
+      - name: Probe Minecraft port
+        run: nmap -sV -Pn -p T:25565 "$PUBLIC_IP"
+
+      - name: Assert port is open
+        run: |
+          result=$(nmap -Pn -p T:25565 "$PUBLIC_IP" | grep '25565/tcp')
+          echo "$result"
+          if echo "$result" | grep -q 'open'; then
+            echo "✅ Minecraft port 25565 is OPEN"
+          else
+            echo "❌ Minecraft port 25565 is not open"
+            exit 1
+          fi
+
+  cleanup_on_failure:
+    name: Cleanup on Failure
+    runs-on: ubuntu-latest
+    needs: [terraform, ansible]
+    if: always() && (needs.terraform.result == 'failure' || needs.ansible.result == 'failure')
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Terminate EC2 instances
+        run: |
+          INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Project,Values=minecraft-auto" \
+                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[*].Instances[*].InstanceId" \
+            --output text --region ${{ secrets.AWS_REGION }})
+          if [ -n "$INSTANCE_IDS" ]; then
+            aws ec2 terminate-instances --instance-ids $INSTANCE_IDS --region ${{ secrets.AWS_REGION }}
+            aws ec2 wait instance-terminated --instance-ids $INSTANCE_IDS --region ${{ secrets.AWS_REGION }}
+          fi
+
+      - name: Release Elastic IPs
+        run: |
+          ALLOC_IDS=$(aws ec2 describe-addresses \
+            --filters "Name=tag:Project,Values=minecraft-auto" \
+            --query "Addresses[*].AllocationId" \
+            --output text --region ${{ secrets.AWS_REGION }})
+          for alloc in $ALLOC_IDS; do
+            aws ec2 release-address --allocation-id $alloc --region ${{ secrets.AWS_REGION }} || true
+          done
+
+      - name: Delete security group
+        run: |
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=minecraft-auto-sg" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text --region ${{ secrets.AWS_REGION }} 2>/dev/null || echo "")
+          if [ -n "$SG_ID" ] && [ "$SG_ID" != "None" ]; then
+            aws ec2 delete-security-group --group-id $SG_ID --region ${{ secrets.AWS_REGION }} || true
+          fi
+
+      - name: Delete key pair
+        run: |
+          aws ec2 delete-key-pair --key-name minecraft-auto-key --region ${{ secrets.AWS_REGION }} || true
+
+      - name: Delete unattached EBS volumes
+        run: |
+          for vol in $(aws ec2 describe-volumes \
+            --filters "Name=status,Values=available" \
+            --query "Volumes[*].VolumeId" \
+            --output text --region ${{ secrets.AWS_REGION }}); do
+            aws ec2 delete-volume --volume-id $vol --region ${{ secrets.AWS_REGION }} || true
+          done

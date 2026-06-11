@@ -1,0 +1,13 @@
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/tfplan
+terraform/*.tfstate
+terraform/*.tfstate.backup
+*.pem
+id_rsa
+id_ed25519
+minecraft
+!*.pub
+.DS_Store
+.idea/
+*.swp

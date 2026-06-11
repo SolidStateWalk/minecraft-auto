@@ -1,0 +1,7 @@
+---
+- name: Provision and configure Minecraft server
+  hosts: minecraft
+  gather_facts: true
+
+  roles:
+    - role: minecraft
